@@ -1,0 +1,11 @@
+{
+  "name": "cbmc",
+  "version": "V0.1",
+  "unsupported_options": ["incremental", "end_func"],
+  "stages": {
+    "generate_specs_and_verification": {
+      "type": "modify",
+      "output_function": "generate_cbmc_contracts"
+    }
+  }
+}

@@ -237,6 +237,10 @@ def hook(proj_dir: str) -> None:
 See [Pipeline Plugins](docs/plugins.md) for the plugin layout, JSON
 configuration, execution modes, lifecycle, and trust boundary.
 
+Bundled plugins: `entry_reasoning` (used by `--entry-func`), `chip` (hardware
+specifications), and `cbmc` (CBMC function contracts from the generated specs; see
+[plugins/cbmc/README.md](plugins/cbmc/README.md)).
+
 `proj_dir` must be a git repository.
 
 ### Pre-run estimate

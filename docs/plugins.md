@@ -321,6 +321,24 @@ and generates the root DUT's design document from ready module artifacts.
 For installation, backend selection, commands, outputs, supported options, and
 known limitations, see the [chip plugin guide](../plugins/chip/README.md).
 
+## Built-in cbmc plugin
+
+The built-in `cbmc` plugin adds a Stage 6 output Hook that translates every
+ready C specification into a CBMC function contract object. For each extracted
+C function it makes one structured LLM call with the function source, its
+`.spec.json`, and its `.info.json`, validates the returned object, and writes
+`fm_agent/cbmc/<src_dir>/<file>-c/<Func>.c.cbmc.json` holding the
+`requires`, `ensures`, and `assigns` clause expressions plus any
+`unexpressible` fragments. It does not modify sources or run `cbmc`.
+
+```bash
+uv run python main.py <proj_dir> --plugin cbmc --only-spec
+```
+
+Already valid objects are reused on `--resume`. A run summary is written to
+`fm_agent/cbmc/summary.json`. See the [cbmc plugin guide](../plugins/cbmc/README.md)
+for the output schema and limitations.
+
 ## Validation and trust boundary
 
 FM-Agent checks that:
