@@ -137,7 +137,8 @@ def build_agent_command(model, prompt, cwd, files=None, backend=None, effort=Non
         "claude",
         "-p",
         "--output-format",
-        "text",
+        "stream-json",
+        "--verbose",
         "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--permission-mode",
@@ -202,6 +203,46 @@ def command_display(command):
     return shlex.join(argv) + suffix
 
 
+def parse_claude_stream(output):
+    """Return ``(text, usage)`` from ``claude -p --output-format stream-json`` stdout.
+
+    The final ``result`` event carries the reply plus token usage summed over every
+    model the session used (``modelUsage``) and the CLI's own ``total_cost_usd``.
+    Returns ``(None, {})`` when no result event is present (e.g. a killed process).
+    """
+    result = None
+    for line in (output or "").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event
+    if result is None:
+        return None, {}
+    model_usage = result.get("modelUsage") or {}
+    if model_usage:
+        usage = {
+            key: sum(entry.get(field) or 0 for entry in model_usage.values())
+            for key, field in (
+                ("input_tokens", "inputTokens"),
+                ("output_tokens", "outputTokens"),
+                ("cache_read_input_tokens", "cacheReadInputTokens"),
+                ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+            )
+        }
+    else:
+        usage = {
+            key: (result.get("usage") or {}).get(key) or 0
+            for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        }
+    if result.get("total_cost_usd") is not None:
+        usage["cost_usd"] = result["total_cost_usd"]
+    usage.update(models=sorted(model_usage), num_turns=result.get("num_turns"),
+                 is_error=bool(result.get("is_error")))
+    return result.get("result"), usage
+
+
 def messages_to_prompt(messages):
     parts = []
     for message in messages:
@@ -259,4 +300,9 @@ def run_agent_for_messages(model, messages, work_dir=None):
         usage.update(dsh_session_id=session_id, dsh_trace_path=records[0]["trace_path"],
                      usage_complete=all(record["usage_complete"] for record in records))
         return next(event["text"] for event in reversed(events) if event["type"] == "final"), usage
+    if command.backend == "claude-cli":
+        text, usage = parse_claude_stream(result.stdout)
+        if text is None or usage.get("is_error"):
+            raise RuntimeError(f"claude-cli returned no successful result: {(result.stdout or '')[-4000:]}")
+        return text.strip(), usage
     return (result.stdout or "").strip(), {}

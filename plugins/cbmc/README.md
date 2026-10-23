@@ -5,9 +5,8 @@ contract objects. For every extracted C function with a ready `.spec.json`, one
 structured LLM call produces the `__CPROVER_requires` / `__CPROVER_ensures` /
 `__CPROVER_assigns` clause expressions for that function.
 
-The plugin only writes JSON. It does not modify sources, generate harnesses, or run
-`cbmc`; the objects are the deliverable, ready for whatever tooling you want to
-feed them into.
+The plugin then inserts those clauses into annotated copies of the C sources. It
+does not modify the project's sources, generate harnesses, or run `cbmc`.
 
 ## Usage
 
@@ -25,8 +24,9 @@ JSON retry limit `max_spec_iter`. `--resume` and `--isolate` are supported;
 
 ```
 fm_agent/cbmc/
-├── summary.json                                  # contracted / reused / failed / skipped
-└── <src_dir>/<file>-c/<Func>.c.cbmc.json         # one object per function
+├── summary.json                                  # contracted / reused / failed / skipped / annotated
+├── <src_dir>/<file>-c/<Func>.c.cbmc.json         # one object per function
+└── annotated/<src_dir>/<file>.c                  # copy of each C source with contracts inserted
 fm_agent/cbmc_contract_system_prompt.md           # the prompt this run used
 ```
 
@@ -58,6 +58,45 @@ balanced brackets, no trailing `;`, `__CPROVER_return_value` / `__CPROVER_old` o
 are sent back to the model with the error, up to `max_spec_iter` times. Functions
 that still fail are listed under `failed` in `summary.json` and the run continues;
 the hook raises only if nothing could be contracted.
+
+## Annotated sources
+
+Every C source file in `phases.json` is copied to `fm_agent/cbmc/annotated/` at the
+same relative path. Each function that has a valid contract gets its clauses
+between the declarator and the body, with its `unexpressible` entries as a comment
+block above it:
+
+```c
+/* CBMC contract: not expressible
+ * - buf holds a NUL-terminated header: no bounded way to state NUL-termination ...
+ */
+int parse_header(const char *buf, size_t len, hdr_t *out)
+    __CPROVER_requires(len > 0)
+    __CPROVER_ensures(__CPROVER_return_value == 0 || __CPROVER_return_value == -1)
+    __CPROVER_assigns(*out)
+{
+```
+
+Each `assigns` entry becomes its own clause, because a `cond: target` entry would
+otherwise guard the targets after it. An empty `assigns` list becomes
+`__CPROVER_assigns()`. Quantifier variables are renamed (`i` -> `i_1`) when two
+clauses of one function bind the same name, since CBMC scopes them together.
+Functions without a valid contract are copied unchanged and listed under
+`annotated.missing` in `summary.json`.
+
+The copies live outside the project tree, so point the include path back at it:
+
+```bash
+goto-cc -I <proj_dir> -c <proj_dir>/fm_agent/cbmc/annotated/src/parser.c -o parser.goto
+goto-instrument --enforce-contract parse_header parser.goto checked.goto
+cbmc checked.goto --function parse_header
+```
+
+The JSON validation is syntactic, so `goto-cc` can still reject a clause. For
+example, `errno` is a macro that expands to a call on some platforms, and
+`__CPROVER_old` of a compound expression such as `a + b` is unsupported (use
+`__CPROVER_old(a) + __CPROVER_old(b)`). Fix the `.cbmc.json` file and rerun with
+`--resume` to regenerate the copy.
 
 ## Resume
 

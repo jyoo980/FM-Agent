@@ -6,9 +6,11 @@ JSON object of ``__CPROVER_requires`` / ``__CPROVER_ensures`` /
 ``__CPROVER_assigns`` clause expressions.  The result is written to
 ``fm_agent/cbmc/<same relative path as the extracted file>.cbmc.json``.
 
-Nothing is inserted into source files and ``cbmc`` is never executed; the
-objects are the deliverable.  The hook is safe to repeat: a sidecar that already
-validates is reused, so a ``--resume`` run makes no LLM call for it.
+The project's source files are never modified and ``cbmc`` is never executed;
+the contracts are also inserted into copies of the C sources under
+``fm_agent/cbmc/annotated/`` (see ``annotate.py``).  The hook is safe to repeat:
+a sidecar that already validates is reused, so a ``--resume`` run makes no LLM
+call for it.
 """
 
 from __future__ import annotations
@@ -304,6 +306,10 @@ def generate_cbmc_contracts(proj_dir: str) -> None:
                     contracted.append(unit_rel)
                     logging.info("cbmc plugin: wrote contract for %s", unit_rel)
 
+    # Imported here: annotate imports this module's contract loader.
+    from plugins.cbmc.annotate import annotate_sources
+
+    annotated = annotate_sources(proj_dir)
     summary = {
         "generated_at": utc_now_iso(),
         "model": LLM_MODEL,
@@ -313,11 +319,16 @@ def generate_cbmc_contracts(proj_dir: str) -> None:
         "reused": sorted(reused),
         "failed": sorted(failed, key=lambda item: item["unit"]),
         "skipped": sorted(skipped, key=lambda item: item["unit"]),
+        "annotated": annotated,
     }
     _write_json_atomic(out_dir / "summary.json", summary)
     print(
         f"[Pipeline] cbmc plugin: {len(contracted)} contracted, {len(failed)} failed; "
         f"summary at fm_agent/cbmc/summary.json"
+    )
+    print(
+        f"[Pipeline] cbmc plugin: annotated {len(annotated['functions_annotated'])} "
+        f"function(s) in {len(annotated['files'])} file(s) under {annotated['output_dir']}"
     )
     if pending and not contracted:
         raise RuntimeError(

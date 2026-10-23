@@ -138,6 +138,8 @@ def _get_nested(d, *keys):
 
 def _cost_from_usage(model, usage):
     """Return USD cost for one anthropic-style usage dict, or 0 if unknown."""
+    if (usage or {}).get("cost_usd") is not None:
+        return float(usage["cost_usd"])
     p = _price_for(model)
     if not p or not usage:
         return 0.0
@@ -368,6 +370,13 @@ class State:
         elif et == "opencode_call":
             backend = ev.get("metadata", {}).get("backend", "opencode")
             self.agent_calls.setdefault(backend, 0)
+            if backend in ("claude-cli", "codex-cli"):
+                # Only claude-cli records usage on the event; codex-cli cost stays unknown.
+                usage = ev.get("metadata", {}).get("usage") or {}
+                if usage:
+                    self._record_agent_usage(backend, next(iter(usage.get("models") or []), None), usage)
+                else:
+                    self.agent_unknown_cost.add(backend)
             summary = ev.get("summary") or f"{backend} call"
             if backend != "opencode":
                 summary = summary.replace("OpenCode", backend)
@@ -526,7 +535,7 @@ class State:
             totals[key] += value
         if model and not self.model_seen:
             self.model_seen = model
-        if _price_for(model):
+        if usage.get("cost_usd") is not None or _price_for(model):
             self.agent_costs[backend] += _cost_from_usage(model, usage)
         else:
             self.agent_unknown_cost.add(backend)

@@ -239,6 +239,9 @@ def _usage_numbers(usage: dict) -> dict:
 
 
 def _usage_cost(model: str | None, usage: dict):
+    if (usage or {}).get("cost_usd") is not None:
+        # The claude CLI reports the session's billed cost directly.
+        return float(usage["cost_usd"])
     price = _price_for(model)
     if not price:
         return None
@@ -318,14 +321,22 @@ def summarize_completed_run(work_dir: str | Path, require_complete=True):
             starts.append(start)
         if end:
             ends.append(end)
-        if event.get("type") != "llm_call":
-            continue
         metadata = event.get("metadata") or {}
         usage = metadata.get("usage") or {}
+        if event.get("type") == "opencode_call":
+            # OpenCode usage comes from trace/opencode/ and DSH usage from trace/dsh/
+            # below; the claude and codex CLIs only report it on the event itself.
+            if metadata.get("backend") not in ("claude-cli", "codex-cli"):
+                continue
+        elif event.get("type") != "llm_call":
+            continue
         if usage.get("dsh_session_id") or (not usage and (work_dir / "trace/dsh").is_dir()):
             continue
         llm_calls += 1
-        event_model = metadata.get("model")
+        if not usage:
+            usage_complete = False
+            continue
+        event_model = metadata.get("model") or next(iter(usage.get("models") or []), None)
         model = model or event_model
         numbers = _usage_numbers(usage)
         tokens += sum(numbers.values())
@@ -411,7 +422,7 @@ def summarize_completed_run(work_dir: str | Path, require_complete=True):
         "tokens": tokens if usage_complete else None,
         "observed_tokens": tokens,
         "usage_complete": usage_complete,
-        "cost_usd": total_cost if cost_known else None,
+        "cost_usd": total_cost if cost_known and usage_complete else None,
         "model": model,
     }
 

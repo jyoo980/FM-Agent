@@ -185,8 +185,8 @@ FM-Agent always writes structured execution traces under `fm_agent/trace/`:
 
 | Path | Content |
 |---|---|
-| `fm_agent/trace/events.jsonl` | Structured events for OpenCode calls and verification LLM calls |
-| `fm_agent/trace/payloads/` | Event payloads such as OpenCode stdout and selected LLM messages |
+| `fm_agent/trace/events.jsonl` | Structured events for agent sessions (OpenCode, Claude CLI, Codex CLI, DSH) and verification LLM calls, with timings and usage |
+| `fm_agent/trace/payloads/` | Event payloads such as agent stdout and selected LLM messages |
 | `fm_agent/trace/opencode/` | Optional raw OpenCode LLM request/response JSONL files |
 
 To capture raw OpenCode LLM traffic, install the OpenCode trace plugin manually by adding it to `~/.config/opencode/opencode.json`:
@@ -200,6 +200,34 @@ To capture raw OpenCode LLM traffic, install the OpenCode trace plugin manually 
 
 FM-Agent automatically passes `TRACE_DIR` and `TRACE_FILENAME` to each OpenCode process. The plugin writes `fm_agent/trace/opencode/<event_id>.jsonl`, where `<event_id>` matches the corresponding `opencode_call` event in `events.jsonl`.
 OpenCode may cache the `@latest` package; to force a refresh, remove `~/.cache/opencode/packages/@lucentia/opencode-trace@latest`.
+
+### Run Duration and Cost
+
+When a run succeeds, FM-Agent writes `fm_agent/run_summary.json` and appends
+the same record to `fm_agent/history.jsonl`:
+
+| Field | Meaning |
+|---|---|
+| `duration_seconds` | Wall-clock time of the whole run |
+| `llm_calls` | Number of LLM calls and agent sessions that were traced |
+| `tokens` | Total input, output, and cache tokens; `null` if any call's usage is missing |
+| `observed_tokens` | Tokens from the calls whose usage was recorded |
+| `usage_complete` | `true` only if every traced call reported its usage |
+| `cost_usd` | Total cost in USD; `null` when usage is incomplete or a model has no known price |
+
+Each event in `fm_agent/trace/events.jsonl` also records its own start and end
+times and, when available, its usage under `metadata.usage`. Whether usage is
+captured depends on `llm.backend`:
+
+| Backend | Usage capture |
+|---|---|
+| `opencode` (default) | Single-shot LLM calls go directly to the API, and their usage is recorded automatically. Agent sessions need the OpenCode trace plugin above; without it, their tokens and cost are left out of the totals. |
+| `claude-cli` | Automatic. FM-Agent runs `claude -p --output-format stream-json --verbose` and records the token counts and the CLI's own `total_cost_usd` for every call and agent session. Each session's full event stream is kept in `fm_agent/trace/payloads/<event_id>_opencode.log`. |
+| `dsh` | Automatic, from DSH session traces under `fm_agent/trace/dsh/` |
+| `codex-cli` | Not captured; `usage_complete` is `false` and `cost_usd` is `null` |
+
+When the CLI reports a cost directly (`claude-cli`), that figure is used.
+Otherwise cost is computed from token counts and LiteLLM's price table.
 
 
 ## Quick Start
@@ -240,6 +268,36 @@ configuration, execution modes, lifecycle, and trust boundary.
 Bundled plugins: `entry_reasoning` (used by `--entry-func`), `chip` (hardware
 specifications), and `cbmc` (CBMC function contracts from the generated specs; see
 [plugins/cbmc/README.md](plugins/cbmc/README.md)).
+
+#### CBMC contracts
+
+The `cbmc` plugin translates each C function's natural-language spec into a CBMC
+function contract, then inserts the contracts into copies of the C sources:
+
+```bash
+uv run python main.py <proj_dir> --plugin cbmc --only-spec
+```
+
+| Path | Content |
+|---|---|
+| `fm_agent/cbmc/<src_dir>/<file>-c/<Func>.c.cbmc.json` | One contract per function: `requires`, `ensures`, `assigns`, and the spec fragments CBMC cannot express (`unexpressible`) |
+| `fm_agent/cbmc/annotated/<src_dir>/<file>.c` | Copy of each C source with `__CPROVER_requires` / `__CPROVER_ensures` / `__CPROVER_assigns` clauses inserted before each function body, and `unexpressible` entries as a comment above it |
+| `fm_agent/cbmc/summary.json` | Contracted, reused, failed, and skipped functions, plus annotation results |
+
+The project's own sources are never modified. The annotated copies live outside
+the project tree, so compile them with the project on the include path:
+
+```bash
+goto-cc -I <proj_dir> -c <proj_dir>/fm_agent/cbmc/annotated/<file>.c -o out.goto
+goto-instrument --enforce-contract <Func> out.goto checked.goto
+cbmc checked.goto --function <Func>
+```
+
+Contracts are only checked syntactically before insertion, so `goto-cc` can still
+reject a clause the model wrote. If that happens, fix the `.cbmc.json` file and
+rerun with `--resume`: existing valid contracts are reused without LLM calls and
+the annotated copies are regenerated. See
+[plugins/cbmc/README.md](plugins/cbmc/README.md#annotated-sources) for details.
 
 `proj_dir` must be a git repository.
 

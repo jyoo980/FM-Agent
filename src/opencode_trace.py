@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass
 
 from config import OPENCODE_TIMEOUT_SECONDS, settings
-from .cli_backend import command_argv, command_backend, command_display, command_env, command_stdin
+from .cli_backend import command_argv, command_backend, command_display, command_env, command_stdin, parse_claude_stream
 from .trace_writer import (
     new_event_id,
     record_trace_event,
@@ -272,6 +272,10 @@ def record_opencode_call(
 ):
     trace_dir = _trace_dir(work_dir)
     children = []
+    usage = {}
+    if command_backend(command) == "claude-cli" and opencode_log_path and os.path.exists(opencode_log_path):
+        with open(opencode_log_path, encoding="utf-8", errors="replace") as log:
+            _, usage = parse_claude_stream(log.read())
 
     if opencode_log_path and os.path.exists(opencode_log_path):
         opencode_log_ref = _payload_ref(trace_dir, opencode_log_path)
@@ -312,6 +316,7 @@ def record_opencode_call(
             **(metadata or {}),
             "command_display": command_display(command),
             "backend": command_backend(command),
+            "usage": usage,
         },
     })
 
